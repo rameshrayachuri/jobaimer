@@ -1,0 +1,170 @@
+name: Deploy — Dev
+
+on:
+  push:
+    branches: [dev]
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+permissions:
+  id-token: write   # Required for OIDC
+  contents: read
+
+jobs:
+  build-push-backend:
+    name: Build & Push Backend Image
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/jobaimer-github-actions-dev
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=dev-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: backend
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/jobaimer-api:${{ steps.meta.outputs.image_tag }}
+            ${{ env.ECR_REGISTRY }}/jobaimer-api:dev-latest
+          cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/jobaimer-api:dev-latest
+          cache-to: type=inline
+
+  build-push-agent:
+    name: Build & Push Agent Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/jobaimer-github-actions-dev
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push agent
+        uses: docker/build-push-action@v5
+        with:
+          context: agent
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/jobaimer-agent:dev-${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/jobaimer-agent:dev-latest
+          cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/jobaimer-agent:dev-latest
+          cache-to: type=inline
+
+  build-frontend:
+    name: Build & Deploy Frontend (Cloudflare Pages)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - run: npm install -g pnpm@9
+
+      - name: Install & build
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: ${{ secrets.DEV_API_BASE_URL }}
+          VITE_SUPABASE_URL: ${{ secrets.DEV_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.DEV_SUPABASE_ANON_KEY }}
+          VITE_STRIPE_PUBLISHABLE_KEY: ${{ secrets.DEV_STRIPE_PUBLISHABLE_KEY }}
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Deploy to Cloudflare Pages (dev)
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: jobaimer-dev
+          directory: frontend/dist
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-lambda:
+    name: Deploy Lambda (dev)
+    needs: [build-push-backend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/jobaimer-github-actions-dev
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update Lambda function
+        run: |
+          aws lambda update-function-code \
+            --function-name jobaimer-api-dev \
+            --image-uri ${{ env.ECR_REGISTRY }}/jobaimer-api:${{ needs.build-push-backend.outputs.image_tag }} \
+            --region ${{ env.AWS_REGION }}
+
+          aws lambda wait function-updated \
+            --function-name jobaimer-api-dev \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Run DB migrations
+        env:
+          SUPABASE_DB_URL: ${{ secrets.DEV_SUPABASE_DB_URL }}
+        run: |
+          pip install alembic asyncpg --quiet
+          cd backend && alembic upgrade head
+
+      - name: Smoke test
+        run: |
+          API_URL="${{ secrets.DEV_API_BASE_URL }}"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_URL}/health")
+          if [ "$STATUS" != "200" ]; then
+            echo "Smoke test failed — /health returned $STATUS"
+            exit 1
+          fi
+          echo "Dev deployment healthy ✅"
+
+  deploy-agent:
+    name: Deploy ECS Agent (dev)
+    needs: [build-push-agent]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/jobaimer-github-actions-dev
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Force ECS service redeploy
+        run: |
+          aws ecs update-service \
+            --cluster jobaimer-dev \
+            --service jobaimer-agent-dev \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}

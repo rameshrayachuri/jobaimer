@@ -1,0 +1,9 @@
+# Copy to prod.tfvars and fill in values
+environment         = "production"
+aws_region          = "us-east-1"
+ecr_registry        = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
+image_tag           = "main-abc1234"
+vpc_id              = "vpc-XXXXXXXXXXXXXXXXX"
+private_subnet_ids  = ["subnet-XXXXXXXXXXXXXXXXX", "subnet-YYYYYYYYYYYYYYYYY"]
+allowed_origins     = ["https://jobaimer.com", "https://www.jobaimer.com"]
+agent_desired_count = 2

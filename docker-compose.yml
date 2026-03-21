@@ -1,0 +1,30 @@
+version: "3.9"
+services:
+  api:
+    build: { context: ./backend, dockerfile: ../infra/docker/api/Dockerfile }
+    ports: ["8000:8000"]
+    env_file: [.env]
+    volumes: ["./backend:/app"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on: [temporal]
+
+  worker:
+    build: { context: ./agent, dockerfile: ../infra/docker/agent/Dockerfile }
+    env_file: [.env]
+    depends_on: [temporal]
+    command: python -m agent.worker
+
+  temporal:
+    image: temporalio/auto-setup:1.24.2
+    ports: ["7233:7233", "8233:8233"]
+    environment: [DB=sqlite]
+
+  temporal-ui:
+    image: temporalio/ui:2.28.0
+    ports: ["8080:8080"]
+    environment: [TEMPORAL_ADDRESS=temporal:7233]
+    depends_on: [temporal]
+
+networks:
+  default:
+    name: jobaimer-net

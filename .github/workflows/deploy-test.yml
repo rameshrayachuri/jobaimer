@@ -1,0 +1,238 @@
+name: Deploy — Test
+
+on:
+  push:
+    branches: [test]
+
+concurrency:
+  group: deploy-test
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write
+
+jobs:
+  build-push:
+    name: Build & Push Images (test)
+    runs-on: ubuntu-latest
+    outputs:
+      backend_tag: test-${{ github.sha }}
+      agent_tag: test-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/jobaimer-github-actions-test
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: backend
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/jobaimer-api:test-${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/jobaimer-api:test-latest
+          cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/jobaimer-api:test-latest
+          cache-to: type=inline
+
+      - name: Build & push agent
+        uses: docker/build-push-action@v5
+        with:
+          context: agent
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/jobaimer-agent:test-${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/jobaimer-agent:test-latest
+          cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/jobaimer-agent:test-latest
+          cache-to: type=inline
+
+  container-scan:
+    name: Trivy Container Scan
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/jobaimer-github-actions-test
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Trivy scan — backend
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/jobaimer-api:${{ needs.build-push.outputs.backend_tag }}
+          format: sarif
+          output: trivy-backend.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "0"   # Don't block, just report
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-backend.sarif
+
+  deploy-test:
+    name: Deploy to Test
+    needs: [build-push, container-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/jobaimer-github-actions-test
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update Lambda (test)
+        run: |
+          aws lambda update-function-code \
+            --function-name jobaimer-api-test \
+            --image-uri ${{ env.ECR_REGISTRY }}/jobaimer-api:${{ needs.build-push.outputs.backend_tag }} \
+            --region ${{ env.AWS_REGION }}
+          aws lambda wait function-updated --function-name jobaimer-api-test
+
+      - name: Run DB migrations
+        env:
+          SUPABASE_DB_URL: ${{ secrets.TEST_SUPABASE_DB_URL }}
+        run: |
+          pip install alembic asyncpg --quiet
+          cd backend && alembic upgrade head
+
+      - name: Deploy ECS agent (test)
+        run: |
+          aws ecs update-service \
+            --cluster jobaimer-test \
+            --service jobaimer-agent-test \
+            --force-new-deployment
+
+      - name: Build & deploy frontend (test)
+        run: |
+          npm install -g pnpm@9
+          cd frontend
+          pnpm install --frozen-lockfile
+          VITE_API_BASE_URL="${{ secrets.TEST_API_BASE_URL }}" \
+          VITE_SUPABASE_URL="${{ secrets.TEST_SUPABASE_URL }}" \
+          VITE_SUPABASE_ANON_KEY="${{ secrets.TEST_SUPABASE_ANON_KEY }}" \
+          VITE_STRIPE_PUBLISHABLE_KEY="${{ secrets.TEST_STRIPE_PUBLISHABLE_KEY }}" \
+          pnpm build
+
+      - name: Deploy to Cloudflare Pages (test)
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: jobaimer-test
+          directory: frontend/dist
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+
+  integration-tests:
+    name: Integration Tests
+    needs: deploy-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test deps
+        run: pip install pytest httpx pytest-asyncio --quiet
+
+      - name: Run integration tests
+        env:
+          TEST_API_URL: ${{ secrets.TEST_API_BASE_URL }}
+          TEST_USER_EMAIL: ${{ secrets.TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+        run: |
+          pytest backend/tests/integration/ \
+            --tb=short \
+            -q \
+            -m "integration"
+
+  e2e-tests:
+    name: E2E Tests (Playwright)
+    needs: deploy-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - run: npm install -g pnpm@9
+
+      - name: Install Playwright
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install chromium --with-deps
+
+      - name: Run E2E tests
+        working-directory: frontend
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ secrets.TEST_FRONTEND_URL }}
+          E2E_USER_EMAIL: ${{ secrets.TEST_USER_EMAIL }}
+          E2E_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+        run: pnpm exec playwright test --reporter=github
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7
+
+  dast-scan:
+    name: DAST — OWASP ZAP
+    needs: deploy-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ZAP API Scan
+        uses: zaproxy/action-api-scan@v0.7.0
+        with:
+          target: ${{ secrets.TEST_API_BASE_URL }}/openapi.json
+          fail_action: false
+          cmd_options: "-I"
+
+      - name: Upload ZAP report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-report
+          path: report_xml.xml
+
+  test-gate:
+    name: ✅ Test Gate
+    needs: [integration-tests, e2e-tests, dast-scan]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check all test jobs passed
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "One or more test jobs failed — not promoting to prod"
+            exit 1
+          fi
+          echo "All test checks passed ✅ — ready to merge to main"

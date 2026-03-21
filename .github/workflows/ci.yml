@@ -1,0 +1,281 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, test, main]
+  pull_request:
+    branches: [dev, test, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+jobs:
+  # ── Backend ─────────────────────────────────────────────────────────────
+  backend-lint:
+    name: Backend — Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install deps
+        working-directory: backend
+        run: pip install ruff mypy ".[dev]" --quiet
+
+      - name: Ruff lint
+        working-directory: backend
+        run: ruff check app/ --output-format=github
+
+      - name: Ruff format check
+        working-directory: backend
+        run: ruff format app/ --check
+
+      - name: Type check (mypy)
+        working-directory: backend
+        run: mypy app/ --ignore-missing-imports --no-error-summary || true
+
+  backend-test:
+    name: Backend — Unit Tests
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: "https://placeholder.supabase.co"
+      SUPABASE_ANON_KEY: "placeholder"
+      SUPABASE_SERVICE_ROLE_KEY: "placeholder"
+      SUPABASE_DB_URL: "postgresql://postgres:postgres@localhost:5432/jobaimer_test"
+      ANTHROPIC_API_KEY: "sk-placeholder"
+      STRIPE_SECRET_KEY: "sk_test_placeholder"
+      STRIPE_WEBHOOK_SECRET: "whsec_placeholder"
+      JWT_SECRET_KEY: "test-secret-key-at-least-32-chars-long"
+      ADMIN_SESSION_SECRET: "test-admin-secret-key-at-least-32"
+      AWS_REGION: "us-east-1"
+      AWS_S3_BUCKET: "jobaimer-resumes-test"
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: jobaimer_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install deps
+        working-directory: backend
+        run: pip install ".[dev]" --quiet
+
+      - name: Run tests
+        working-directory: backend
+        run: |
+          pytest tests/ \
+            --tb=short \
+            --cov=app \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=80 \
+            -q
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: backend/coverage.xml
+          flags: backend
+          fail_ci_if_error: false
+
+  # ── Frontend ─────────────────────────────────────────────────────────────
+  frontend-lint:
+    name: Frontend — Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9
+
+      - name: Install deps
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: ESLint
+        working-directory: frontend
+        run: pnpm lint
+
+      - name: TypeScript check
+        working-directory: frontend
+        run: pnpm tsc --noEmit
+
+  frontend-test:
+    name: Frontend — Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9
+
+      - name: Install deps
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Vitest
+        working-directory: frontend
+        run: pnpm test --coverage
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: frontend/coverage/coverage-final.json
+          flags: frontend
+          fail_ci_if_error: false
+
+  # ── Security ─────────────────────────────────────────────────────────────
+  sast-backend:
+    name: SAST — Bandit (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install bandit[toml] --quiet
+
+      - name: Bandit scan
+        run: |
+          bandit -r backend/app/ \
+            -ll \
+            --exclude backend/app/tests \
+            -f json \
+            -o bandit-report.json || true
+
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+  sast-deps:
+    name: SAST — Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: pip-audit (Python)
+        run: |
+          pip install pip-audit --quiet
+          pip-audit -r backend/pyproject.toml --format json > pip-audit.json || true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: pnpm audit (JS)
+        working-directory: frontend
+        run: |
+          npm install -g pnpm@9
+          pnpm audit --json > pnpm-audit.json || true
+
+      - name: Upload audit reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-audit
+          path: |
+            pip-audit.json
+            frontend/pnpm-audit.json
+
+  secret-scan:
+    name: SAST — Secret Scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for gitleaks
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Agent ─────────────────────────────────────────────────────────────────
+  agent-lint:
+    name: Agent — Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install deps
+        working-directory: agent
+        run: pip install ruff ".[dev]" --quiet
+
+      - name: Ruff lint
+        working-directory: agent
+        run: ruff check . --output-format=github
+
+  # ── CI gate — all jobs must pass ─────────────────────────────────────────
+  ci-gate:
+    name: ✅ CI Gate
+    needs:
+      - backend-lint
+      - backend-test
+      - frontend-lint
+      - frontend-test
+      - sast-backend
+      - sast-deps
+      - secret-scan
+      - agent-lint
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "One or more CI jobs failed"
+            exit 1
+          fi
+          echo "All CI checks passed ✅"
