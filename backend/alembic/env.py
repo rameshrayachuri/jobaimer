@@ -9,7 +9,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-DB_URL = os.environ.get("SUPABASE_DB_URL", "").replace("postgresql://", "postgresql+asyncpg://")
+DB_URL = os.environ.get("DATABASE_URL", os.environ.get("SUPABASE_DB_URL", "")).replace("postgresql://", "postgresql+asyncpg://").replace("postgres://", "postgresql+asyncpg://")
 config.set_main_option("sqlalchemy.url", DB_URL)
 
 

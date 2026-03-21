@@ -13,16 +13,15 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
     S3_RESUME_BUCKET: str = "jobaimer-resumes-dev"
 
-    # Supabase
-    SUPABASE_URL: str = ""
-    SUPABASE_ANON_KEY: str = ""
-    SUPABASE_SERVICE_ROLE_KEY: str = ""
-    SUPABASE_DB_URL: str = ""
+    # Database — Neon (plain Postgres, replaces Supabase DB)
+    DATABASE_URL: str = ""          # Neon connection string (user project)
+    ADMIN_DATABASE_URL: str = ""    # Neon connection string (admin project)
 
-    # Admin Supabase
-    ADMIN_SUPABASE_URL: str = ""
-    ADMIN_SUPABASE_SERVICE_ROLE_KEY: str = ""
-    ADMIN_SUPABASE_DB_URL: str = ""
+    # AWS Cognito — User Pool (replaces Supabase Auth)
+    COGNITO_USER_POOL_ID: str = ""
+    COGNITO_CLIENT_ID: str = ""     # App client (no secret — public client)
+    COGNITO_CLIENT_SECRET: str = "" # App client secret (if using confidential client)
+    COGNITO_REGION: str = "us-east-1"
 
     # JWT
     API_SECRET_KEY: str = "dev-secret-key-change-in-production"
@@ -75,7 +74,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def check_prod_secrets(self) -> "Settings":
         if self.ENVIRONMENT == "production":
-            for key in ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY",
+            for key in ["DATABASE_URL", "COGNITO_USER_POOL_ID", "COGNITO_CLIENT_ID",
                         "ANTHROPIC_API_KEY", "STRIPE_SECRET_KEY"]:
                 if not getattr(self, key):
                     raise ValueError(f"Missing production secret: {key}")
