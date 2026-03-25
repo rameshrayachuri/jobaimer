@@ -6,12 +6,12 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatDate(date: string | Date | null | undefined): string {
-  if (!date) return "—";
+  if (!date) return "â";
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(new Date(date));
 }
 
 export function formatRelativeTime(date: string | Date | null | undefined): string {
-  if (!date) return "—";
+  if (!date) return "â";
   const d = new Date(date);
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
@@ -58,3 +58,18 @@ export const APPLICATION_STATUS_COLORS: Record<string, string> = {
   withdrawn: "bg-slate-100 text-slate-500",
   low_match_skipped: "bg-slate-100 text-slate-400",
 };
+
+export function formatDistanceToNow(date: Date | string | null | undefined): string {
+  if (!date) return 'unknown';
+  const d = new Date(date);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return diffMins + 'm ago';
+  if (diffHours < 24) return diffHours + 'h ago';
+  if (diffDays < 7) return diffDays + 'd ago';
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
