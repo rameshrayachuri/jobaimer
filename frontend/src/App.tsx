@@ -8,10 +8,10 @@ import { LandingPage } from "./pages/LandingPage";
 import { LoginPage } from "./pages/auth/LoginPage";
 import { RegisterPage } from "./pages/auth/RegisterPage";
 import { VerifyPage } from "./pages/auth/VerifyPage";
-import { DashboardPage } from "./pages/DashboardPage";
-import { ApplicationsPage } from "./pages/ApplicationsPage";
+import DashboardPage from "./pages/DashboardPage";
+import ApplicationsPage from "./pages/ApplicationsPage";
 import { ProfilePage } from "./pages/ProfilePage";
-import { BillingPage } from "./pages/BillingPage";
+import BillingPage from "./pages/BillingPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
