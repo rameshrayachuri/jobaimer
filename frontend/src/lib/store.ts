@@ -48,3 +48,15 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   setUser: (user) => set({ user }),
 }))
+
+
+// ── UI Store ──────────────────────────────────────────────────────────────────
+interface UIState {
+  sidebarOpen: boolean;
+  setSidebarOpen: (open: boolean) => void;
+}
+
+export const useUIStore = create<UIState>()((set) => ({
+  sidebarOpen: true,
+  setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
+}));
