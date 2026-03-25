@@ -76,22 +76,28 @@ class AdminLoginResponse(BaseModel):
 
 @router.post("/sign-in", response_model=AdminLoginResponse)
 async def admin_sign_in(body: AdminLoginRequest):
-    """Admin login — checked against admin_users table in admin Supabase project."""
-    from supabase import create_client
-    if not settings.ADMIN_SUPABASE_URL:
-        raise HTTPException(503, "Admin auth not configured")
-    sb = create_client(settings.ADMIN_SUPABASE_URL, settings.ADMIN_SUPABASE_SERVICE_ROLE_KEY)
-    # In production: query admin_users table and verify bcrypt password
-    # For now: use Supabase Auth on the admin project
+    """Admin login — checks admin_users table using bcrypt password."""
+    import asyncpg
     try:
-        result = sb.auth.sign_in_with_password({"email": body.email, "password": body.password})
-        admin_id = result.user.id
-        # Get role from admin_users table
-        role = "super_admin"  # TODO: fetch from admin_users table
-        token = create_admin_token(str(admin_id), body.email, role)
-        return AdminLoginResponse(access_token=token, role=role, email=body.email)
+        conn = await asyncpg.connect(settings.ADMIN_DATABASE_URL or settings.DATABASE_URL)
+        try:
+            row = await conn.fetchrow(
+                "SELECT id, email, password_hash, role, is_active FROM admin_users WHERE email = $1 LIMIT 1",
+                body.email
+            )
+        finally:
+            await conn.close()
     except Exception:
+        raise HTTPException(503, "Database unavailable")
+
+    if not row or not row["is_active"]:
         raise HTTPException(401, "Invalid admin credentials")
+
+    if not verify_password(body.password, row["password_hash"]):
+        raise HTTPException(401, "Invalid admin credentials")
+
+    token = create_admin_token(str(row["id"]), row["email"], row["role"])
+    return AdminLoginResponse(access_token=token, role=row["role"], email=row["email"])
 
 
 @router.post("/sign-out")
