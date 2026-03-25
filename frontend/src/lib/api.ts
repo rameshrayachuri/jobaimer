@@ -51,7 +51,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   return res.json()
 }
 
-// ── Auth ──────────────────────────────────────────────────────────────────────
+// ââ Auth ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 export const auth = {
   signUp: (body: { email: string; password: string; phone: string; full_name: string }) =>
     request<{ user_id: string; message: string }>('/auth/sign-up', { method: 'POST', body }),
@@ -74,12 +74,12 @@ export const auth = {
   signOut: () => request<void>('/auth/sign-out', { method: 'POST' }),
 }
 
-// ── Dashboard ─────────────────────────────────────────────────────────────────
+// ââ Dashboard âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 export const dashboard = {
   get: () => request<DashboardData>('/api/v1/dashboard'),
 }
 
-// ── Applications ──────────────────────────────────────────────────────────────
+// ââ Applications ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 export const applications = {
   list: (params?: { status?: string; page?: number; page_size?: number }) => {
     const q = new URLSearchParams(params as Record<string, string>).toString()
@@ -94,7 +94,7 @@ export const applications = {
   resumeStatus: (id: string) => request<ResumeStatus>(`/api/v1/applications/${id}/resume/status`),
 }
 
-// ── Profile ───────────────────────────────────────────────────────────────────
+// ââ Profile âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 export const profile = {
   get: () => request<UserProfile>('/api/v1/profile'),
   update: (body: Partial<UserProfile>) => request('/api/v1/profile', { method: 'PUT', body }),
@@ -107,7 +107,7 @@ export const profile = {
   },
 }
 
-// ── Agent ─────────────────────────────────────────────────────────────────────
+// ââ Agent âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 export const agent = {
   status: () => request<AgentStatus>('/api/v1/agent/status'),
   activate: () => request('/api/v1/agent/activate', { method: 'POST' }),
@@ -115,7 +115,7 @@ export const agent = {
   stop: () => request('/api/v1/agent/stop', { method: 'POST' }),
 }
 
-// ── Billing ───────────────────────────────────────────────────────────────────
+// ââ Billing âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 export const billing = {
   subscription: () => request<SubscriptionData>('/api/v1/billing/subscription'),
   checkout: (plan_id: string, promo_code?: string) =>
@@ -128,7 +128,7 @@ export const billing = {
       { method: 'POST', body: { code, plan_id } }),
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ââ Types âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 export interface DashboardData {
   total_applied: number
   interviews_scheduled: number
@@ -205,3 +205,13 @@ export interface CouponValidation {
   duration: string; original_price_cents: number
   discounted_price_cents: number; savings_cents: number; savings_label: string
 }
+
+
+// ── Named 'api' export for components using: import { api } from '@/lib/api' ──
+export const api = {
+  get: <T = unknown>(path: string) => request<T>(path),
+  post: <T = unknown>(path: string, body?: unknown) => request<T>(path, { method: 'POST', body }),
+  patch: <T = unknown>(path: string, body?: unknown) => request<T>(path, { method: 'PATCH', body }),
+  put: <T = unknown>(path: string, body?: unknown) => request<T>(path, { method: 'PUT', body }),
+  delete: <T = unknown>(path: string) => request<T>(path, { method: 'DELETE' }),
+};
